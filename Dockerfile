@@ -26,9 +26,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # 安装系统依赖
-# - git: Git 存储后端需要
-# - libpq-dev: PostgreSQL 客户端库
-# - gcc: 编译 psycopg2-binary 需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libpq-dev \
@@ -50,6 +47,17 @@ COPY utils ./utils
 COPY scripts ./scripts
 COPY --from=web-build /app/web/out ./web_dist
 
-EXPOSE 80
+# ============================================================
+# 适配 Choreo 安全要求：创建非 root 用户并修改权限
+# ============================================================
+RUN useradd -u 10001 -m choreouser && \
+    chown -R 10001:10001 /app
 
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80", "--access-log"]
+USER 10001
+# ============================================================
+
+# 将端口改为 8080 以符合 Choreo 限制
+EXPOSE 8080
+
+# 启动命令也同步修改为 8080 端口
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--access-log"]

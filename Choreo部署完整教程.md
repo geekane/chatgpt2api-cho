@@ -88,8 +88,13 @@ https://console.choreo.dev/
 1. **Buildpack Type**: 选择 **Dockerfile**
 2. **Dockerfile Path**: 输入 `./Dockerfile`
 3. **Docker Context Path**: 输入 `.`（当前目录）
-4. **Port**: 输入 `80`（Dockerfile 中暴露的端口）
+4. **Port**: 输入 `8080`（⚠️ 注意：已从 80 改为 8080）
 5. 点击 **Create**
+
+**重要提示**：
+- ✅ Dockerfile 已配置为使用非 root 用户（UID 10001）
+- ✅ 端口已改为 8080（符合 Choreo 安全要求）
+- ✅ 前端已集成在 Docker 镜像中，无需单独部署
 
 ---
 
