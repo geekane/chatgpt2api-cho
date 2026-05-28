@@ -1,0 +1,199 @@
+name: Deploy to Choreo
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - production
+
+env:
+  PROJECT_NAME: chatgpt2api
+  BACKEND_COMPONENT: chatgpt2api-backend
+  FRONTEND_COMPONENT: chatgpt2api-frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Choreo CLI
+        run: |
+          curl -o- https://raw.githubusercontent.com/wso2/wdp-cli/main/scripts/install.sh | bash
+          echo "$HOME/.wdp/bin" >> $GITHUB_PATH
+      
+      - name: Verify CLI installation
+        run: wdp --version
+      
+      - name: Login to Choreo
+        env:
+          CHOREO_TOKEN: ${{ secrets.CHOREO_TOKEN }}
+        run: |
+          echo "$CHOREO_TOKEN" | wdp login --token
+      
+      - name: Create or update project
+        run: |
+          if ! wdp get project $PROJECT_NAME; then
+            wdp create project $PROJECT_NAME --type=multi-repository
+          fi
+      
+      - name: Create or update backend component
+        run: |
+          if ! wdp get component $BACKEND_COMPONENT --project=$PROJECT_NAME; then
+            wdp create component $BACKEND_COMPONENT \
+              --project=$PROJECT_NAME \
+              --type=service \
+              --language=python \
+              --buildpack=python
+          fi
+      
+      - name: Create or update frontend component
+        run: |
+          if ! wdp get component $FRONTEND_COMPONENT --project=$PROJECT_NAME; then
+            wdp create component $FRONTEND_COMPONENT \
+              --project=$PROJECT_NAME \
+              --type=web-application \
+              --language=nodejs \
+              --buildpack=nodejs
+          fi
+      
+      - name: Set backend environment variables
+        env:
+          AUTH_KEY: ${{ secrets.CHATGPT2API_AUTH_KEY }}
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          wdp set env $BACKEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --env=$ENVIRONMENT \
+            --key=CHATGPT2API_AUTH_KEY \
+            --value="$AUTH_KEY"
+      
+      - name: Build backend
+        id: build-backend
+        run: |
+          BUILD_ID=$(wdp create build $BACKEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --output=json | jq -r '.id')
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+      
+      - name: Wait for backend build
+        run: |
+          BUILD_ID="${{ steps.build-backend.outputs.build_id }}"
+          while true; do
+            STATUS=$(wdp get build $BUILD_ID \
+              --component=$BACKEND_COMPONENT \
+              --project=$PROJECT_NAME \
+              --output=json | jq -r '.status')
+            
+            if [ "$STATUS" == "SUCCESS" ]; then
+              echo "Backend build succeeded"
+              break
+            elif [ "$STATUS" == "FAILED" ]; then
+              echo "Backend build failed"
+              exit 1
+            fi
+            
+            echo "Build status: $STATUS"
+            sleep 10
+          done
+      
+      - name: Deploy backend
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          BUILD_ID="${{ steps.build-backend.outputs.build_id }}"
+          wdp create deployment $BACKEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --env=$ENVIRONMENT \
+            --build-id=$BUILD_ID
+      
+      - name: Get backend URL
+        id: backend-url
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          BACKEND_URL=$(wdp get component $BACKEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --output=json | jq -r ".environments[] | select(.name==\"$ENVIRONMENT\") | .url")
+          echo "url=$BACKEND_URL" >> $GITHUB_OUTPUT
+          echo "Backend URL: $BACKEND_URL"
+      
+      - name: Set frontend environment variables
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+          BACKEND_URL: ${{ steps.backend-url.outputs.url }}
+        run: |
+          wdp set env $FRONTEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --env=$ENVIRONMENT \
+            --key=NEXT_PUBLIC_API_URL \
+            --value="$BACKEND_URL"
+      
+      - name: Build frontend
+        id: build-frontend
+        run: |
+          BUILD_ID=$(wdp create build $FRONTEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --output=json | jq -r '.id')
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+      
+      - name: Wait for frontend build
+        run: |
+          BUILD_ID="${{ steps.build-frontend.outputs.build_id }}"
+          while true; do
+            STATUS=$(wdp get build $BUILD_ID \
+              --component=$FRONTEND_COMPONENT \
+              --project=$PROJECT_NAME \
+              --output=json | jq -r '.status')
+            
+            if [ "$STATUS" == "SUCCESS" ]; then
+              echo "Frontend build succeeded"
+              break
+            elif [ "$STATUS" == "FAILED" ]; then
+              echo "Frontend build failed"
+              exit 1
+            fi
+            
+            echo "Build status: $STATUS"
+            sleep 10
+          done
+      
+      - name: Deploy frontend
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          BUILD_ID="${{ steps.build-frontend.outputs.build_id }}"
+          wdp create deployment $FRONTEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --env=$ENVIRONMENT \
+            --build-id=$BUILD_ID
+      
+      - name: Get frontend URL
+        id: frontend-url
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          FRONTEND_URL=$(wdp get component $FRONTEND_COMPONENT \
+            --project=$PROJECT_NAME \
+            --output=json | jq -r ".environments[] | select(.name==\"$ENVIRONMENT\") | .url")
+          echo "url=$FRONTEND_URL" >> $GITHUB_OUTPUT
+          echo "Frontend URL: $FRONTEND_URL"
+      
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend API**: ${{ steps.backend-url.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend App**: ${{ steps.frontend-url.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ github.event.inputs.environment || 'development' }}" >> $GITHUB_STEP_SUMMARY
